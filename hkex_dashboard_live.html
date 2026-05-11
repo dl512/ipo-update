@@ -1,0 +1,705 @@
+<!DOCTYPE html>
+<!--
+  HKEX dashboard — reads Google Sheets in the browser (no server required).
+
+  Default CONFIG.mode = "direct" uses Google's gviz JSON endpoint (same public access
+  as XPLORE's CSV export). Your workbook must be shared: Anyone with the link → Viewer.
+
+  Set CONFIG.spreadsheetId and CONFIG.gids: each value is either a numeric gid from the tab URL
+  or the tab's visible name (e.g. Sheet2). Defaults use Sheet1–Sheet5 to match the pipeline.
+
+  Private sheets (service account only): set CONFIG.mode = "api", run
+      python dashboard_sheet_server.py
+  and open http://127.0.0.1:8787/  (or set CONFIG.apiBase).
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>HKEX pipeline — live</title>
+  <style>
+    :root {
+      --bg: #0f1419;
+      --surface: #1a2332;
+      --surface2: #243047;
+      --border: #2d3a52;
+      --text: #e7ecf3;
+      --muted: #8b9cb3;
+      --accent: #5b9cf8;
+      --accent-dim: #3d7dd6;
+      --ok: #3ecf8e;
+      --warn: #e8b84a;
+      --err: #f07178;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.45;
+      min-height: 100vh;
+    }
+    header {
+      padding: 1rem 1.25rem;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      flex-wrap: wrap;
+      align-items: baseline;
+      gap: 0.75rem 1.5rem;
+    }
+    header h1 {
+      margin: 0;
+      font-size: 1.15rem;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+    }
+    .meta {
+      font-size: 0.8rem;
+      color: var(--muted);
+    }
+    .meta strong { color: var(--ok); }
+    .meta .loading { color: var(--warn); }
+    .meta .err { color: var(--err); }
+    .tabs {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.35rem;
+      padding: 0.75rem 1.25rem;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      position: sticky;
+      top: 0;
+      z-index: 20;
+    }
+    .tabs button {
+      appearance: none;
+      border: 1px solid var(--border);
+      background: var(--surface2);
+      color: var(--text);
+      padding: 0.45rem 0.85rem;
+      border-radius: 6px;
+      font-size: 0.82rem;
+      cursor: pointer;
+      transition: background 0.12s, border-color 0.12s;
+    }
+    .tabs button:hover { border-color: var(--accent-dim); }
+    .tabs button.active {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #0a0f14;
+      font-weight: 600;
+    }
+    .tabs button.warn { border-color: var(--warn); }
+    .panel {
+      display: none;
+      padding: 1rem 1.25rem 2rem;
+      max-width: 100%;
+    }
+    .panel.active { display: block; }
+    .toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.75rem;
+      align-items: center;
+      margin-bottom: 0.75rem;
+    }
+    .toolbar label { font-size: 0.75rem; color: var(--muted); }
+    .toolbar input[type="search"] {
+      flex: 1;
+      min-width: 200px;
+      max-width: 360px;
+      padding: 0.45rem 0.65rem;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--text);
+      font-size: 0.85rem;
+    }
+    .count {
+      font-size: 0.8rem;
+      color: var(--muted);
+    }
+    .table-wrap {
+      overflow: auto;
+      max-height: calc(100vh - 220px);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--surface);
+    }
+    table {
+      border-collapse: collapse;
+      width: 100%;
+      font-size: 0.78rem;
+    }
+    thead th {
+      position: sticky;
+      top: 0;
+      z-index: 2;
+      background: var(--surface2);
+      color: var(--muted);
+      font-weight: 600;
+      text-align: left;
+      padding: 0.55rem 0.65rem;
+      border-bottom: 2px solid var(--border);
+      white-space: nowrap;
+      cursor: pointer;
+      user-select: none;
+    }
+    thead th:hover { color: var(--accent); }
+    thead th .hint { font-weight: 400; opacity: 0.55; font-size: 0.7rem; margin-left: 0.25rem; }
+    tbody td {
+      padding: 0.4rem 0.65rem;
+      border-bottom: 1px solid var(--border);
+      vertical-align: top;
+      max-width: 28rem;
+      word-break: break-word;
+    }
+    tbody tr:nth-child(even) { background: rgba(255,255,255,0.02); }
+    tbody tr:hover { background: rgba(91, 156, 248, 0.08); }
+    a { color: var(--accent); }
+    .empty { color: var(--muted); padding: 2rem; text-align: center; }
+    .banner-err {
+      margin: 0 1.25rem 1rem;
+      padding: 0.65rem 1rem;
+      background: rgba(240, 113, 120, 0.12);
+      border: 1px solid var(--err);
+      border-radius: 8px;
+      color: var(--err);
+      font-size: 0.85rem;
+      display: none;
+    }
+    .banner-err.show { display: block; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>HKEX pipeline — live</h1>
+    <span class="meta">
+      Source: <strong id="srcNote">—</strong> ·
+      Last fetch: <strong id="fetchTime">—</strong> ·
+      Next refresh: <strong id="countdown">—</strong>
+      <span id="loadState"></span>
+    </span>
+  </header>
+  <div class="banner-err" id="errBanner"></div>
+  <nav class="tabs" id="tabBar" aria-label="Datasets"></nav>
+  <main id="panels"></main>
+
+  <script>
+(function () {
+  const CONFIG = {
+    /** "direct" = load from Google in the browser (public / link-shared sheet only). */
+    /** "api" = JSON from python dashboard_sheet_server.py (private sheets). */
+    mode: "direct",
+    spreadsheetId: "1AbTN_jSiXik1sKXGqa1Vh_VRqsX0b4yUs_oYLrPpXIo",
+    /**
+     * How to load each tab from gviz: use a numeric gid (from …#gid= in the URL) OR the tab name
+     * (e.g. Sheet2). Names must match the bottom tab labels in Google Sheets exactly.
+     */
+    gids: {
+      application_proof: "Sheet1",
+      phip: "Sheet2",
+      listings: "Sheet3",
+      long: "Sheet4",
+      csrc: "Sheet5",
+    },
+    apiBase: "",
+    /** Auto-refresh interval (seconds). 3600 = one hour. */
+    refreshSeconds: 3600,
+    /** HKD per 1 USD for converting ``gross_proceeds_hkd`` to US$m on the listings tab (approximate peg). */
+    hkdPerUsd: 7.8,
+  };
+
+  const TAB_ORDER = [
+    "application_proof",
+    "phip",
+    "listings",
+    "long",
+    "csrc",
+  ];
+
+  const TAB_LABELS = {
+    application_proof: "Application proof · Sheet1",
+    phip: "PHIP · Sheet2",
+    listings: "HKEX listings · Sheet3",
+    long: "Cornerstone (long) · Sheet4",
+    csrc: "CSRC approvals · Sheet5",
+  };
+
+  /** Optional per-tab: subset of columns, header labels, default sort (when user has not chosen one). */
+  const TAB_VIEW = {
+    application_proof: {
+      columns: ["company_name", "application_proof_url", "posting_date"],
+      columnLabels: {
+        company_name: "Company",
+        application_proof_url: "URL",
+        posting_date: "Posting date",
+      },
+      defaultSort: { col: "posting_date", dir: "desc" },
+    },
+    phip: {
+      columns: ["company_name", "phip_url", "posting_date"],
+      columnLabels: {
+        company_name: "Company",
+        phip_url: "URL",
+        posting_date: "Posting date",
+      },
+      defaultSort: { col: "posting_date", dir: "desc" },
+    },
+    listings: {
+      columns: [
+        "stock_code",
+        "company_name",
+        "date_of_listing",
+        "sponsors",
+        "gross_proceeds_hkd",
+        "cornerstone_investors",
+      ],
+      columnLabels: {
+        stock_code: "Stock code",
+        company_name: "Company",
+        date_of_listing: "Listing date",
+        sponsors: "Sponsors",
+        gross_proceeds_hkd: "Gross proceeds (US$m)",
+        cornerstone_investors: "Cornerstone investors",
+      },
+      defaultSort: { col: "date_of_listing", dir: "desc" },
+    },
+    csrc: {
+      defaultSort: { col: "announcement_date", dir: "desc" },
+    },
+  };
+
+  let payload = { tabs: {}, fetched_at: "", source: "" };
+  const state = { tab: 0, sortCol: {}, filter: {} };
+  let refreshTimer = null;
+  let countdownTimer = null;
+  let secondsLeft = CONFIG.refreshSeconds;
+
+  function formatCountdown(secs) {
+    if (secs == null || secs < 0) return "—";
+    const n = Math.floor(secs);
+    if (n >= 3600) {
+      const h = Math.floor(n / 3600);
+      const m = Math.floor((n % 3600) / 60);
+      const s = n % 60;
+      return h + "h " + m + "m " + s + "s";
+    }
+    if (n >= 60) {
+      const m = Math.floor(n / 60);
+      const s = n % 60;
+      return m + "m " + s + "s";
+    }
+    return n + "s";
+  }
+
+  function apiUrl(path) {
+    const base = (CONFIG.apiBase || "").replace(/\/$/, "");
+    return base + path;
+  }
+
+  function cellToString(cell) {
+    if (!cell) return "";
+    if (cell.f != null && String(cell.f).trim() !== "") return String(cell.f);
+    const v = cell.v;
+    if (v == null || v === "") return "";
+    if (typeof v === "object") {
+      if (v instanceof Date) return v.toISOString();
+      return JSON.stringify(v);
+    }
+    return String(v);
+  }
+
+  function gvizToTable(resp) {
+    if (!resp || !resp.table) {
+      const msg =
+        resp && resp.errors && resp.errors[0]
+          ? resp.errors[0].detailed_message || resp.errors[0].message
+          : "No table in response";
+      return { columns: [], rows: [], row_count: 0, error: msg };
+    }
+    if (resp.status !== "ok") {
+      return { columns: [], rows: [], row_count: 0, error: "status: " + (resp.status || "?") };
+    }
+    const colMeta = resp.table.cols || [];
+    const columns = colMeta.map(function (c, i) {
+      const lab = (c.label || "").toString().trim();
+      return lab || "column_" + (i + 1);
+    });
+    const rows = [];
+    (resp.table.rows || []).forEach(function (row) {
+      const obj = {};
+      const cells = row.c || [];
+      for (let i = 0; i < columns.length; i++) {
+        obj[columns[i]] = cellToString(cells[i]);
+      }
+      rows.push(obj);
+    });
+    return { columns: columns, rows: rows, row_count: rows.length, error: null };
+  }
+
+  /** tabSpec: digits only → &gid=… ; otherwise → &sheet=… (tab name). */
+  function fetchGviz(sheetId, tabSpec) {
+    return new Promise(function (resolve, reject) {
+      const timeoutMs = 45000;
+      const ts = Date.now();
+      const s = document.createElement("script");
+      let done = false;
+
+      function finish(err, data) {
+        if (done) return;
+        done = true;
+        clearTimeout(to);
+        if (s.parentNode) s.parentNode.removeChild(s);
+        try {
+          if (prevGoogle === undefined) delete window.google;
+          else window.google = prevGoogle;
+        } catch (e) {}
+        if (err) reject(err);
+        else resolve(data);
+      }
+
+      const prevGoogle = window.google;
+      window.google = {
+        visualization: {
+          Query: {
+            setResponse: function (response) {
+              finish(null, response);
+            },
+          },
+        },
+      };
+
+      const to = setTimeout(function () {
+        finish(new Error("Timeout loading tab (check tab gid/name and sharing)"));
+      }, timeoutMs);
+
+      s.onerror = function () {
+        finish(new Error("Network error loading Google script"));
+      };
+
+      const spec = String(tabSpec).trim();
+      const useGid = /^\d+$/.test(spec);
+      const tabParam = useGid
+        ? "gid=" + encodeURIComponent(spec)
+        : "sheet=" + encodeURIComponent(spec);
+
+      s.src =
+        "https://docs.google.com/spreadsheets/d/" +
+        encodeURIComponent(sheetId) +
+        "/gviz/tq?tqx=out:json&" +
+        tabParam +
+        "&_=" +
+        ts;
+      document.head.appendChild(s);
+    });
+  }
+
+  async function fetchAllDirect() {
+    const tabs = {};
+    const fetchedAt = new Date().toISOString().replace("T", " ").slice(0, 19) + " UTC";
+    for (let i = 0; i < TAB_ORDER.length; i++) {
+      const kind = TAB_ORDER[i];
+      const gid = CONFIG.gids[kind];
+      const label = TAB_LABELS[kind] || kind;
+      if (gid === "" || gid == null) {
+        tabs[kind] = {
+          label: label,
+          columns: [],
+          rows: [],
+          row_count: 0,
+          error:
+            "Set CONFIG.gids." +
+            kind +
+            " to this tab's gid (digits) or exact tab name (e.g. Sheet2)",
+        };
+        continue;
+      }
+      try {
+        const resp = await fetchGviz(CONFIG.spreadsheetId, gid);
+        const t = gvizToTable(resp);
+        tabs[kind] = {
+          label: label,
+          columns: t.columns,
+          rows: t.rows,
+          row_count: t.row_count,
+          error: t.error,
+        };
+      } catch (e) {
+        tabs[kind] = {
+          label: label,
+          columns: [],
+          rows: [],
+          row_count: 0,
+          error: e.message || String(e),
+        };
+      }
+    }
+    return { tabs: tabs, fetched_at: fetchedAt, source: "google_sheets_direct" };
+  }
+
+  function isDateSortColumn(col) {
+    return /date|time/i.test(String(col || ""));
+  }
+
+  /** Parse common sheet + HKEX formats to UTC ms; NaN if not a date. DD/MM/YYYY first (not US). */
+  function parseDateForSort(s) {
+    if (s == null) return NaN;
+    const raw = String(s).trim();
+    if (!raw) return NaN;
+    const dmY = raw.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
+    if (dmY) {
+      const t = new Date(+dmY[3], +dmY[2] - 1, +dmY[1]).getTime();
+      if (!isNaN(t)) return t;
+    }
+    if (/^\d{4}-\d{2}-\d{2}/.test(raw)) {
+      const t = Date.parse(raw);
+      if (!isNaN(t)) return t;
+    }
+    const t = Date.parse(raw);
+    return isNaN(t) ? NaN : t;
+  }
+
+  function sortRows(rows, col, dir) {
+    const m = dir === "asc" ? 1 : -1;
+    const copy = rows.slice();
+    const dateCol = isDateSortColumn(col);
+    copy.sort((a, b) => {
+      const va = a[col] == null ? "" : String(a[col]);
+      const vb = b[col] == null ? "" : String(b[col]);
+      if (dateCol) {
+        const da = parseDateForSort(va);
+        const db = parseDateForSort(vb);
+        const aOk = !isNaN(da);
+        const bOk = !isNaN(db);
+        if (aOk && bOk) return (da - db) * m;
+        if (aOk && !bOk) return -1 * m;
+        if (!aOk && bOk) return 1 * m;
+      }
+      const cleanA = va.replace(/,/g, "").replace(/^HK\$/, "").trim();
+      const cleanB = vb.replace(/,/g, "").replace(/^HK\$/, "").trim();
+      const na = parseFloat(cleanA);
+      const nb = parseFloat(cleanB);
+      const numLike =
+        /^-?\d*\.?\d+$/.test(cleanA) && /^-?\d*\.?\d+$/.test(cleanB) && cleanA !== "" && cleanB !== "";
+      if (numLike && Number.isFinite(na) && Number.isFinite(nb)) return (na - nb) * m;
+      return va.localeCompare(vb, undefined, { numeric: true, sensitivity: "base" }) * m;
+    });
+    return copy;
+  }
+
+  function filterRows(rows, q) {
+    if (!q) return rows;
+    const s = q.toLowerCase();
+    return rows.filter((r) =>
+      Object.values(r).some((v) => String(v).toLowerCase().includes(s))
+    );
+  }
+
+  function escapeHtml(s) {
+    return String(s)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+  function escapeAttr(s) {
+    return escapeHtml(s).replace(/'/g, "&#39;");
+  }
+
+  function renderTable(panel, tabIndex) {
+    const kind = TAB_ORDER[tabIndex];
+    const t = payload.tabs[kind];
+    if (!t) return;
+
+    const view = TAB_VIEW[kind];
+    if (view && view.defaultSort && state.sortCol[kind] == null) {
+      state.sortCol[kind] = { col: view.defaultSort.col, dir: view.defaultSort.dir };
+    }
+
+    const q = (state.filter[kind] || "").trim();
+    let rows = (t.rows || []).slice();
+    const sc = state.sortCol[kind];
+    if (sc) rows = sortRows(rows, sc.col, sc.dir);
+    rows = filterRows(rows, q);
+    let cols = (t.columns && t.columns.length) ? t.columns : Object.keys(rows[0] || {});
+    if (view && view.columns && view.columns.length) {
+      const avail = new Set(cols);
+      cols = view.columns.filter((c) => avail.has(c));
+    }
+
+    let thead = "<tr>";
+    for (const c of cols) {
+      const dir = sc && sc.col === c ? sc.dir : "";
+      const hint = dir === "asc" ? "▲" : dir === "desc" ? "▼" : "";
+      const headLab =
+        view && view.columnLabels && view.columnLabels[c] ? view.columnLabels[c] : c;
+      thead += `<th data-col="${escapeAttr(c)}">${escapeHtml(headLab)}<span class="hint">${hint}</span></th>`;
+    }
+    thead += "</tr>";
+
+    let tbody = "";
+    if (t.error) {
+      tbody = `<tr><td colspan="${Math.max(1, cols.length)}" class="empty">${escapeHtml(t.error)}</td></tr>`;
+    } else if (!rows.length) {
+      tbody = `<tr><td colspan="${cols.length}" class="empty">No rows (filter or empty dataset).</td></tr>`;
+    } else {
+      for (const r of rows) {
+        tbody += "<tr>";
+        for (const c of cols) {
+          const raw = r[c] == null ? "" : String(r[c]);
+          let cell;
+          if (kind === "listings" && c === "gross_proceeds_hkd") {
+            const cleaned = raw.replace(/,/g, "").replace(/^HK\$/i, "").trim();
+            const hkd = parseFloat(cleaned);
+            if (Number.isFinite(hkd) && CONFIG.hkdPerUsd > 0) {
+              const usdM = hkd / CONFIG.hkdPerUsd / 1e6;
+              cell = escapeHtml("US$" + usdM.toFixed(1) + "m");
+            } else {
+              cell = escapeHtml(raw);
+            }
+          } else if (/^https?:\/\//i.test(raw)) {
+            let label = "link";
+            try {
+              const u = new URL(raw);
+              label = (u.hostname || "") + (u.pathname.length > 24 ? u.pathname.slice(0, 22) + "…" : u.pathname);
+            } catch (e) {}
+            cell = `<a href="${escapeAttr(raw)}" target="_blank" rel="noopener">${escapeHtml(label)}</a>`;
+          } else {
+            cell = escapeHtml(raw);
+          }
+          tbody += `<td>${cell}</td>`;
+        }
+        tbody += "</tr>";
+      }
+    }
+
+    panel.querySelector("table").innerHTML = "<thead>" + thead + "</thead><tbody>" + tbody + "</tbody>";
+    const total = t.row_count != null ? t.row_count : (t.rows || []).length;
+    panel.querySelector(".count").textContent =
+      rows.length + " row(s) shown · " + total + " in dataset";
+
+    panel.querySelectorAll("thead th").forEach((th) => {
+      th.onclick = () => {
+        const col = th.getAttribute("data-col");
+        const cur = state.sortCol[kind];
+        let dir = "asc";
+        if (cur && cur.col === col) dir = cur.dir === "asc" ? "desc" : "asc";
+        state.sortCol[kind] = { col, dir };
+        renderTable(panel, tabIndex);
+      };
+    });
+  }
+
+  function activate(i) {
+    state.tab = i;
+    document.querySelectorAll("#tabBar button").forEach((b, j) => b.classList.toggle("active", j === i));
+    document.querySelectorAll(".panel").forEach((p, j) => p.classList.toggle("active", j === i));
+  }
+
+  function buildChrome() {
+    const tabBar = document.getElementById("tabBar");
+    const panels = document.getElementById("panels");
+    tabBar.innerHTML = "";
+    panels.innerHTML = "";
+
+    TAB_ORDER.forEach((kind, i) => {
+      const t = payload.tabs[kind] || { label: kind, row_count: 0, error: "no data" };
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.textContent = (t.label || kind) + " (" + (t.row_count || 0) + ")";
+      if (t.error) btn.classList.add("warn");
+      btn.classList.toggle("active", i === 0);
+      btn.addEventListener("click", () => activate(i));
+      tabBar.appendChild(btn);
+
+      const panel = document.createElement("section");
+      panel.className = "panel" + (i === 0 ? " active" : "");
+      panel.innerHTML =
+        '<div class="toolbar">' +
+        '<label>Filter <input type="search" placeholder="Substring in any column…" data-kind="' +
+        escapeAttr(kind) +
+        '" /></label>' +
+        '<span class="count"></span></div>' +
+        '<div class="table-wrap"><table></table></div>';
+      panel.querySelector("input[type=search]").addEventListener("input", (e) => {
+        state.filter[kind] = e.target.value;
+        renderTable(panel, i);
+      });
+      panels.appendChild(panel);
+      renderTable(panel, i);
+    });
+  }
+
+  async function fetchAll() {
+    const loadEl = document.getElementById("loadState");
+    const banner = document.getElementById("errBanner");
+    loadEl.innerHTML = ' <span class="loading">Refreshing…</span>';
+    banner.classList.remove("show");
+    try {
+      if (CONFIG.mode === "direct") {
+        payload = await fetchAllDirect();
+        document.getElementById("srcNote").textContent = "Google Sheets (browser)";
+        document.getElementById("fetchTime").textContent = payload.fetched_at || "—";
+        buildChrome();
+        activate(state.tab);
+        loadEl.innerHTML = "";
+        secondsLeft = CONFIG.refreshSeconds;
+        document.getElementById("countdown").textContent = formatCountdown(secondsLeft);
+        return;
+      }
+
+      const r = await fetch(apiUrl("/api/all"), { cache: "no-store" });
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      const data = await r.json();
+      payload = data;
+      document.getElementById("srcNote").textContent =
+        data.source === "google_sheets" ? "Google Sheets (API)" : "Local CSV";
+      document.getElementById("fetchTime").textContent = data.fetched_at || "—";
+      buildChrome();
+      activate(state.tab);
+      loadEl.innerHTML = "";
+      secondsLeft = CONFIG.refreshSeconds;
+      document.getElementById("countdown").textContent = formatCountdown(secondsLeft);
+    } catch (e) {
+      console.error(e);
+      if (CONFIG.mode === "direct") {
+        banner.textContent =
+          "Direct load failed: " +
+          e.message +
+          " — Share the spreadsheet with *Anyone with the link* (Viewer) and check CONFIG.gids (gid or tab name).";
+      } else {
+        banner.textContent =
+          "Could not load /api/all. Run: python dashboard_sheet_server.py and open http://127.0.0.1:8787/ " +
+          "— or set CONFIG.apiBase. (" +
+          e.message +
+          ")";
+      }
+      banner.classList.add("show");
+      loadEl.innerHTML = ' <span class="err">Failed</span>';
+    }
+  }
+
+  function tickCountdown() {
+    secondsLeft -= 1;
+    if (secondsLeft <= 0) secondsLeft = CONFIG.refreshSeconds;
+    document.getElementById("countdown").textContent = formatCountdown(secondsLeft);
+  }
+
+  function schedule() {
+    if (refreshTimer) clearInterval(refreshTimer);
+    if (countdownTimer) clearInterval(countdownTimer);
+    secondsLeft = CONFIG.refreshSeconds;
+    document.getElementById("countdown").textContent = formatCountdown(secondsLeft);
+    refreshTimer = setInterval(fetchAll, CONFIG.refreshSeconds * 1000);
+    countdownTimer = setInterval(tickCountdown, 1000);
+  }
+
+  fetchAll();
+  schedule();
+})();
+  </script>
+</body>
+</html>

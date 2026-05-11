@@ -20,6 +20,7 @@ import pandas as pd
 _SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_LISTINGS_CSV = _SCRIPT_DIR / "hkex_listings_companies.csv"
 
+from google_sheets_store import hkex_sheets_enabled, read_listings_table
 from mailjet_email import send_email as _mailjet_send
 from openai_utils import (
     chat_completion_with_fallback,
@@ -127,6 +128,7 @@ def _rule_based_markdown_section(r: dict[str, Any], summary: str) -> str:
         "",
         summary.strip(),
         "",
+        f"- **Listing date:** {r['date_of_listing'] if r['date_of_listing'] else '—'}",
         f"- **Sponsors:** {r['sponsors'] if r['sponsors'] else '—'}",
         f"- **Gross proceeds:** {_format_currency_hkd(r['gross_proceeds_hkd'])}",
         f"- **Cornerstone investors:** {_cornerstone_display(r['cornerstone_investors'])}",
@@ -152,19 +154,21 @@ def build_listing_summary_markdown(
     block can be embedded under a parent digest (e.g. ``hkex_pipeline``).
     """
     listings_csv = (listings_csv or DEFAULT_LISTINGS_CSV).resolve()
-    if not listings_csv.exists():
+    if not hkex_sheets_enabled() and not listings_csv.exists():
         raise FileNotFoundError(f"CSV not found: {listings_csv}")
 
-    df = pd.read_csv(listings_csv, dtype=str).fillna("")
+    df = read_listings_table(listings_csv)
     needed = {"stock_code", "company_name", "date_of_listing", "sponsors", "gross_proceeds_hkd"}
-    missing = needed - set(df.columns)
-    if missing:
-        raise ValueError(f"CSV missing columns: {sorted(missing)}")
+    for col in needed:
+        if col not in df.columns:
+            df[col] = ""
+    if not df.empty:
+        df = df.astype(str)
 
     mask = df["date_of_listing"].apply(lambda c: row_matches_listing_date(c, listing_day))
     sub = df.loc[mask]
     if sub.empty:
-        note = f"_No rows in {listings_csv.name} with date_of_listing = {listing_day.isoformat()}._\n"
+        note = "_No new listings for this date._\n"
         if document_heading:
             body = f"# HKEX listings summary — {listing_day.isoformat()}\n\n{note}"
         else:
@@ -178,6 +182,7 @@ def build_listing_summary_markdown(
             {
                 "stock_code": code,
                 "company_name": str(row["company_name"]).strip(),
+                "date_of_listing": str(row.get("date_of_listing", "")).strip(),
                 "sponsors": str(row["sponsors"]).strip(),
                 "gross_proceeds_hkd": str(row["gross_proceeds_hkd"]).strip(),
                 "cornerstone_investors": str(row.get("cornerstone_investors", "")).strip(),
@@ -187,11 +192,80 @@ def build_listing_summary_markdown(
 
     by_code = asyncio.run(_llm_summaries_only(rows, listing_day))
     sections = [_rule_based_markdown_section(r, by_code[r["stock_code"]]) for r in rows]
-    meta = (
-        f"_Source: {listings_csv.name} ({len(rows)} row(s)). Company blurbs from LLM; other fields from CSV._\n\n"
-    )
+    meta = ""
     if document_heading:
         header = f"# HKEX listings summary — {listing_day.isoformat()}\n\n{meta}"
+    else:
+        header = meta
+    return header + "\n".join(sections), len(rows)
+
+
+def build_listing_summary_markdown_for_codes(
+    stock_codes: list[str],
+    listings_csv: Path | None = None,
+    *,
+    document_heading: bool = True,
+) -> tuple[str, int]:
+    """
+    Returns (markdown body, number of companies summarized) for the given stock codes.
+    Missing codes are ignored. If none are found, returns a short note and 0.
+    """
+    listings_csv = (listings_csv or DEFAULT_LISTINGS_CSV).resolve()
+    if not hkex_sheets_enabled() and not listings_csv.exists():
+        raise FileNotFoundError(f"CSV not found: {listings_csv}")
+
+    wanted: list[str] = []
+    seen: set[str] = set()
+    for raw in stock_codes:
+        code = str(raw).strip().zfill(5)
+        if not code.isdigit() or code in seen:
+            continue
+        seen.add(code)
+        wanted.append(code)
+
+    if not wanted:
+        note = "_No valid stock codes requested._\n"
+        if document_heading:
+            return f"# HKEX listings summary — selected stock codes\n\n{note}", 0
+        return note, 0
+
+    df = read_listings_table(listings_csv)
+    needed = {"stock_code", "company_name", "date_of_listing", "sponsors", "gross_proceeds_hkd"}
+    for col in needed:
+        if col not in df.columns:
+            df[col] = ""
+    if not df.empty:
+        df = df.astype(str)
+
+    rows: list[dict[str, Any]] = []
+    for code in wanted:
+        hit = df.loc[df["stock_code"].astype(str).str.strip().str.zfill(5) == code]
+        if hit.empty:
+            continue
+        row = hit.iloc[0]
+        rows.append(
+            {
+                "stock_code": code,
+                "company_name": str(row["company_name"]).strip(),
+                "date_of_listing": str(row.get("date_of_listing", "")).strip(),
+                "sponsors": str(row["sponsors"]).strip(),
+                "gross_proceeds_hkd": str(row["gross_proceeds_hkd"]).strip(),
+                "cornerstone_investors": str(row.get("cornerstone_investors", "")).strip(),
+                "cornerstone_status": str(row.get("cornerstone_status", "")).strip(),
+            }
+        )
+
+    if not rows:
+        note = "_No newly ingested listings found in this run._\n"
+        if document_heading:
+            return f"# HKEX listings summary — selected stock codes\n\n{note}", 0
+        return note, 0
+
+    by_code = asyncio.run(_llm_summaries_only(rows, datetime.now().date()))
+    sections = [_rule_based_markdown_section(r, by_code[r["stock_code"]]) for r in rows]
+    meta = ""
+    if document_heading:
+        header = "# HKEX listings summary — newly ingested rows\n\n" + meta
     else:
         header = meta
     return header + "\n".join(sections), len(rows)

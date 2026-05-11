@@ -14,6 +14,7 @@ import pandas as pd
 import requests
 
 from cornerstone_investors_to_companies import rebuild_cornerstone_long_csv
+from google_sheets_store import hkex_sheets_enabled, listings_source_ready, read_listings_table, write_sheet_df
 from hkex_cornerstone_from_stock import fetch_cornerstone_from_hkex
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
@@ -197,6 +198,7 @@ class NlrIngestResult:
     cornerstone_ok: int
     cornerstone_err: int
     long_csv_refreshed: bool
+    new_stock_codes: list[str]
 
 
 def ingest_new_listings_from_nlr(
@@ -229,7 +231,7 @@ def ingest_new_listings_from_nlr(
     elif not nlr_path.exists():
         raise FileNotFoundError(f"NLR file not found: {nlr_path}")
 
-    if not listings_csv.exists():
+    if not listings_source_ready(listings_csv):
         raise FileNotFoundError(f"Listings CSV not found: {listings_csv}")
 
     raw = pd.read_excel(nlr_path, sheet_name="NLR", header=None)
@@ -237,10 +239,11 @@ def ingest_new_listings_from_nlr(
     if not parsed:
         raise ValueError("No listing rows parsed from NLR sheet.")
 
-    existing = pd.read_csv(listings_csv, dtype=str).fillna("")
+    existing = read_listings_table(listings_csv)
     for col in LISTING_COLS:
         if col not in existing.columns:
             existing[col] = ""
+    existing = existing.fillna("")
 
     codes_in_file = existing_stock_codes(existing)
     to_add: list[dict[str, str | int]] = []
@@ -266,13 +269,15 @@ def ingest_new_listings_from_nlr(
         if refresh_long:
             rebuild_cornerstone_long_csv(listings_csv, long_csv)
             long_refreshed = True
-            print(f"Refreshed: {long_csv}", file=sys.stderr)
+            _long_dest = "Google Sheet (long)" if hkex_sheets_enabled() else str(long_csv)
+            print(f"Refreshed: {_long_dest}", file=sys.stderr)
         return NlrIngestResult(
             parsed_total=len(parsed),
             new_added=0,
             cornerstone_ok=0,
             cornerstone_err=0,
             long_csv_refreshed=long_refreshed,
+            new_stock_codes=[],
         )
 
     new_frames: list[pd.DataFrame] = []
@@ -324,10 +329,14 @@ def ingest_new_listings_from_nlr(
 
         append_block = pd.concat(new_frames, ignore_index=True)
         merged = pd.concat([append_block, existing[LISTING_COLS]], ignore_index=True)
-        write_listings_csv(merged, listings_csv)
+        if hkex_sheets_enabled():
+            write_sheet_df("listings", merged[LISTING_COLS])
+        else:
+            write_listings_csv(merged, listings_csv)
 
+    dest = "Google Sheet (listings)" if hkex_sheets_enabled() else str(listings_csv)
     print(
-        f"Wrote {len(to_add)} new row(s) to top of {listings_csv} "
+        f"Wrote {len(to_add)} new row(s) to top of {dest} "
         f"(cornerstone ok={cornerstone_ok}, errors={cornerstone_err})",
         file=sys.stderr,
     )
@@ -335,7 +344,8 @@ def ingest_new_listings_from_nlr(
     if refresh_long:
         rebuild_cornerstone_long_csv(listings_csv, long_csv)
         long_refreshed = True
-        print(f"Refreshed: {long_csv}", file=sys.stderr)
+        _long_dest = "Google Sheet (long)" if hkex_sheets_enabled() else str(long_csv)
+        print(f"Refreshed: {_long_dest}", file=sys.stderr)
 
     return NlrIngestResult(
         parsed_total=len(parsed),
@@ -343,4 +353,5 @@ def ingest_new_listings_from_nlr(
         cornerstone_ok=cornerstone_ok,
         cornerstone_err=cornerstone_err,
         long_csv_refreshed=long_refreshed,
+        new_stock_codes=[str(rec["stock_code"]).strip().zfill(5) for rec in to_add],
     )

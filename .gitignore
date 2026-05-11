@@ -1,4 +1,6 @@
 .env
+global-headlines*.json
+*-9494f258e0a5.json
 .venv/
 venv/
 __pycache__/

@@ -19,6 +19,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from google_sheets_store import hkex_sheets_enabled, read_listings_table, write_sheet_df
+
 _SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_LISTINGS = _SCRIPT_DIR / "hkex_listings_companies.csv"
 DEFAULT_OUT = _SCRIPT_DIR / "cornerstone_investor_to_listings.csv"
@@ -65,10 +67,10 @@ def rebuild_cornerstone_long_csv(
     listings_csv = (listings_csv or DEFAULT_LISTINGS).resolve()
     long_csv = (long_csv or DEFAULT_LONG).resolve()
 
-    if not listings_csv.exists():
+    if not hkex_sheets_enabled() and not listings_csv.exists():
         raise FileNotFoundError(f"CSV not found: {listings_csv}")
 
-    df = pd.read_csv(listings_csv, dtype=str).fillna("")
+    df = read_listings_table(listings_csv)
     inv_to_codes, code_to_name = _invert_cornerstone_from_df(df)
 
     long_rows = []
@@ -86,8 +88,11 @@ def rebuild_cornerstone_long_csv(
     if long_df.empty:
         long_df = pd.DataFrame(columns=["cornerstone_investor", "stock_code", "company_name"])
 
-    long_csv.parent.mkdir(parents=True, exist_ok=True)
-    long_df.to_csv(long_csv, index=False, encoding="utf-8-sig")
+    if hkex_sheets_enabled():
+        write_sheet_df("long", long_df)
+    else:
+        long_csv.parent.mkdir(parents=True, exist_ok=True)
+        long_df.to_csv(long_csv, index=False, encoding="utf-8-sig")
     return len(long_rows)
 
 
@@ -99,7 +104,10 @@ def rebuild_cornerstone_wide_csv(
     listings_csv = (listings_csv or DEFAULT_LISTINGS).resolve()
     wide_csv = (wide_csv or DEFAULT_OUT).resolve()
 
-    df = pd.read_csv(listings_csv, dtype=str).fillna("")
+    if not hkex_sheets_enabled() and not listings_csv.exists():
+        raise FileNotFoundError(f"CSV not found: {listings_csv}")
+
+    df = read_listings_table(listings_csv)
     inv_to_codes, code_to_name = _invert_cornerstone_from_df(df)
 
     if not inv_to_codes:
