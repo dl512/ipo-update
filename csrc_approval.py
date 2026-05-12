@@ -64,6 +64,101 @@ def _normalize_date_cell(s: str) -> str:
     return f"{y}-{mo:02d}-{d:02d}"
 
 
+def _normalize_company_for_key(s: str) -> str:
+    """Collapse whitespace so sheet vs crawl spacing differences do not break dedup."""
+    s = str(s).strip()
+    return " ".join(s.split()) if s else ""
+
+
+def _normalize_title_for_key(s: str) -> str:
+    """Unify CSRC quote styles and spacing so the same notice title matches the sheet."""
+    t = str(s).strip()
+    if not t:
+        return ""
+    for a, b in (
+        ("\u201c", '"'),
+        ("\u201d", '"'),
+        ("\u2018", "'"),
+        ("\u2019", "'"),
+        ("\u300c", '"'),
+        ("\u300d", '"'),
+    ):
+        t = t.replace(a, b)
+    return " ".join(t.split())
+
+
+def _normalize_csrc_url_for_dedup(raw: str) -> str:
+    """
+    Stable URL for dedup. Fixes legacy double-host rows like
+    https://www.csrc.gov.cn//www.csrc.gov.cn/...
+    """
+    s = str(raw).strip()
+    if not s:
+        return ""
+    s = re.sub(
+        r"^https?://www\.csrc\.gov\.cn/+https?://www\.csrc\.gov\.cn",
+        "https://www.csrc.gov.cn",
+        s,
+        flags=re.I,
+    )
+    s = re.sub(r"^(https?://www\.csrc\.gov\.cn)/+", r"\1/", s, flags=re.I)
+    return s.rstrip("/")
+
+
+def _standardize_csrc_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Map Google Sheet / manual headers (including Chinese) to the canonical column names.
+    Without this, get_all_records() keeps 公司名称 etc. and company_name stays empty — every
+    crawl row looks "new".
+    """
+    if df.empty:
+        return pd.DataFrame(columns=["company_name", "title", "announcement_date", "source_url"])
+    aliases: tuple[tuple[str, tuple[str, ...]], ...] = (
+        ("company_name", ("company_name", "公司名称", "公司", "企业名称")),
+        ("title", ("title", "标题")),
+        (
+            "announcement_date",
+            ("announcement_date", "发文日期", "日期", "公告日期", "announcement date"),
+        ),
+        ("source_url", ("source_url", "链接", "来源", "url", "详情链接", "source url")),
+    )
+    rename: dict[str, str] = {}
+    used_orig: set[str] = set()
+    lower_map = {str(c).strip().lower(): c for c in df.columns}
+    for canonical, keys in aliases:
+        for k in keys:
+            kk = str(k).strip()
+            if kk in df.columns and kk not in used_orig:
+                rename[kk] = canonical
+                used_orig.add(kk)
+                break
+            kl = kk.lower()
+            if kl in lower_map and lower_map[kl] not in used_orig:
+                rename[lower_map[kl]] = canonical
+                used_orig.add(lower_map[kl])
+                break
+    out = df.rename(columns=rename)
+    cols = ["company_name", "title", "announcement_date", "source_url"]
+    for c in cols:
+        if c not in out.columns:
+            out[c] = ""
+    return out[cols].astype(str)
+
+
+def _csrc_dedup_key(row: pd.Series) -> tuple:
+    """
+    Prefer source URL (one row per CSRC document). Fallback: normalized company + date + title.
+    """
+    url = _normalize_csrc_url_for_dedup(row.get("source_url", ""))
+    list_ref = _normalize_csrc_url_for_dedup(CSRC_APPROVAL_URL)
+    if url and url != list_ref:
+        return ("url", url)
+    comp = _normalize_company_for_key(str(row.get("company_name", "")))
+    dt = _normalize_date_cell(str(row.get("announcement_date", "")))
+    tit = _normalize_title_for_key(str(row.get("title", "")))
+    return ("meta", comp, dt, tit)
+
+
 def _abs_csrc_url(href: str) -> str:
     h = str(href).strip()
     if not h:
@@ -304,28 +399,16 @@ def upsert_csrc_approvals(csv_path: Path, rows: list[dict[str, str]]) -> CsrcApp
     incoming = incoming[cols].astype(str)
 
     if hkex_sheets_enabled():
-        existing = read_sheet_df("csrc")
-        if existing.empty:
-            existing = pd.DataFrame(columns=cols)
-        for c in cols:
-            if c not in existing.columns:
-                existing[c] = ""
-        existing = existing[cols].astype(str)
+        existing = _standardize_csrc_columns(read_sheet_df("csrc").fillna(""))
     elif csv_path.exists():
-        existing = pd.read_csv(csv_path, dtype=str).fillna("")
-        for c in cols:
-            if c not in existing.columns:
-                existing[c] = ""
-        existing = existing[cols].astype(str)
+        existing = _standardize_csrc_columns(pd.read_csv(csv_path, dtype=str).fillna(""))
     else:
         existing = pd.DataFrame(columns=cols)
 
-    existing_keys = set(
-        tuple(existing.loc[i, ["company_name", "announcement_date", "title"]].tolist()) for i in existing.index
-    )
+    existing_keys = {_csrc_dedup_key(existing.loc[i]) for i in existing.index}
     added: list[dict[str, str]] = []
     for _, r in incoming.iterrows():
-        key = (r["company_name"], r["announcement_date"], r["title"])
+        key = _csrc_dedup_key(r)
         if key in existing_keys:
             continue
         existing_keys.add(key)
