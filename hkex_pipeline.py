@@ -5,7 +5,7 @@ Each run:
 1. Read existing listings from Google Sheet (or CSV when sheets are off).
 2. Download latest Main Board NLR and ingest **only** rows not already in that store; update cornerstone long.
 3. Pull HKEX Application Proof + PHIP JSON feeds and upsert **only** new rows vs Sheet/CSV (full active list, not a single calendar day).
-4. Pull CSRC 全流通 approvals and upsert **only** new rows.
+4. Pull CSRC overseas-listing 备案通知书 and upsert **only** new rows.
 5. Email a digest when at least one section has news: listings whose **listing date** is the digest day
    (or, if none, rows newly ingested from NLR this run), plus new Application Proof / PHIP / CSRC rows.
 

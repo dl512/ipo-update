@@ -1,5 +1,9 @@
 """
-Fetch CSRC approval list, extract "全流通备案通知书" rows, and upsert to CSV.
+Fetch CSRC approval list, extract overseas-listing 备案通知书 rows, and upsert to CSV.
+
+Matched title shapes (company name extracted from each):
+  - 关于{公司}境外发行上市备案通知书
+  - 关于{公司}境外发行上市及境内未上市股份"全流通"备案通知书
 
 The zfxxgk list page fills via AJAX: GET /searchList/{channelId}?_isJson=true...
 Static HTML has an empty placeholder, so scraping the .shtml alone yields 0 rows.
@@ -31,11 +35,17 @@ _HTTP_HEADERS = {
     "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
     "Referer": f"{CSRC_ORIGIN}/",
 }
-# CSRC titles vary: …股份"全流通"的备案通知书 vs …股份"全流通"备案通知书 (no 的)
+# CSRC titles vary, e.g. …股份"全流通"的备案通知书 vs plain …境外发行上市备案通知书
 _QUOTES = r'["\u201c\u201d\u2018\u2019\u300c\u300d]'
-_TITLE_PATTERN = re.compile(
+# 全流通 (match before plain pattern so 及境内未上市股份… is not swallowed)
+_TITLE_PATTERN_FULL_CIRC = re.compile(
     rf"关于(?P<company>.+?)境外发行上市及境内未上市股份\s*{_QUOTES}?\s*全流通\s*{_QUOTES}?\s*的?备案通知书"
 )
+# Plain overseas listing (excludes 及境内未上市股份… titles handled above)
+_TITLE_PATTERN_OVERSEAS = re.compile(
+    r"关于(?P<company>.+?)境外发行上市(?!及境内未上市股份)\s*的?备案通知书"
+)
+_TITLE_PATTERNS = (_TITLE_PATTERN_FULL_CIRC, _TITLE_PATTERN_OVERSEAS)
 _DATE_IN_TEXT = re.compile(r"(20\d{2})[-/](\d{1,2})[-/](\d{1,2})")
 _META_CHANNEL_RE = re.compile(
     r'<meta\s+name=["\"]channelid["\"]\s+content=["\"]([^"\']+)["\"]', re.I
@@ -49,10 +59,24 @@ class CsrcApprovalUpsertResult:
 
 
 def _extract_company_from_title(title: str) -> str | None:
-    m = _TITLE_PATTERN.search(str(title).strip())
-    if not m:
-        return None
-    return m.group("company").strip()
+    t = str(title).strip()
+    for pat in _TITLE_PATTERNS:
+        m = pat.search(t)
+        if m:
+            return " ".join(m.group("company").split())
+    return None
+
+
+def _iter_title_matches(text: str):
+    """Yield regex matches for supported 备案通知书 title shapes (no overlapping spans)."""
+    seen: set[tuple[int, int]] = set()
+    for pat in _TITLE_PATTERNS:
+        for m in pat.finditer(text):
+            span = m.span()
+            if span in seen:
+                continue
+            seen.add(span)
+            yield m
 
 
 def _normalize_date_cell(s: str) -> str:
@@ -87,22 +111,34 @@ def _normalize_title_for_key(s: str) -> str:
     return " ".join(t.split())
 
 
-def _normalize_csrc_url_for_dedup(raw: str) -> str:
+def normalize_csrc_source_url(raw: str) -> str:
     """
-    Stable URL for dedup. Fixes legacy double-host rows like
+    Canonical CSRC document URL for storage and dedup.
+    Fixes protocol-relative and legacy double-host values like
     https://www.csrc.gov.cn//www.csrc.gov.cn/...
     """
     s = str(raw).strip()
     if not s:
         return ""
+    if s.startswith("//"):
+        s = "https:" + s
     s = re.sub(
         r"^https?://www\.csrc\.gov\.cn/+https?://www\.csrc\.gov\.cn",
         "https://www.csrc.gov.cn",
         s,
         flags=re.I,
     )
+    s = re.sub(
+        r"^https?://www\.csrc\.gov\.cn/+www\.csrc\.gov\.cn",
+        "https://www.csrc.gov.cn",
+        s,
+        flags=re.I,
+    )
     s = re.sub(r"^(https?://www\.csrc\.gov\.cn)/+", r"\1/", s, flags=re.I)
     return s.rstrip("/")
+
+
+_normalize_csrc_url_for_dedup = normalize_csrc_source_url
 
 
 def _standardize_csrc_columns(df: pd.DataFrame) -> pd.DataFrame:
@@ -163,11 +199,13 @@ def _abs_csrc_url(href: str) -> str:
     h = str(href).strip()
     if not h:
         return CSRC_APPROVAL_URL
+    if h.startswith("//"):
+        return normalize_csrc_source_url(h)
     if h.startswith("http://") or h.startswith("https://"):
-        return h
+        return normalize_csrc_source_url(h)
     if h.startswith("/"):
-        return CSRC_ORIGIN + h
-    return f"{CSRC_ORIGIN}/{h}"
+        return normalize_csrc_source_url(CSRC_ORIGIN + h)
+    return normalize_csrc_source_url(f"{CSRC_ORIGIN}/{h}")
 
 
 def _channel_id_from_list_url(url: str) -> str | None:
@@ -255,7 +293,7 @@ def _matching_rows_from_api_items(items: list[dict], list_page_url: str) -> list
                 "company_name": company,
                 "title": title,
                 "announcement_date": announce_date,
-                "source_url": detail if detail else list_page_url,
+                "source_url": normalize_csrc_source_url(detail if detail else list_page_url),
             }
         )
     return rows
@@ -312,7 +350,7 @@ def _extract_rows_from_tables(soup: BeautifulSoup) -> list[dict[str, str]]:
 
 def _extract_rows_from_free_text(text: str) -> list[dict[str, str]]:
     rows: list[dict[str, str]] = []
-    for m in _TITLE_PATTERN.finditer(text):
+    for m in _iter_title_matches(text):
         title = m.group(0).strip()
         company = m.group("company").strip()
         if not company:
