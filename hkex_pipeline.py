@@ -6,7 +6,8 @@ Each run:
 2. Download latest Main Board NLR and ingest **only** rows not already in that store; update cornerstone long.
 3. Pull HKEX Application Proof + PHIP JSON feeds and upsert **only** new rows vs Sheet/CSV (full active list, not a single calendar day).
 4. Pull CSRC 全流通 approvals and upsert **only** new rows.
-5. Email a digest **only when** at least one section had new rows; the body summarizes **those** new rows only.
+5. Email a digest when at least one section has news: listings whose **listing date** is the digest day
+   (or, if none, rows newly ingested from NLR this run), plus new Application Proof / PHIP / CSRC rows.
 
 Usage (from hkex/):
     python hkex_pipeline.py
@@ -117,14 +118,21 @@ def run_hkex_daily(
         refresh_long=True,
     )
 
-    n_list = 0
-    if ingest.new_stock_codes:
+    # NLR rows are usually ingested before listing day, so compare by listing date for the digest.
+    # Fall back to this run's newly ingested codes when nothing lists on ``listing_day``.
+    listings_md, n_list = build_listing_summary_markdown(
+        listing_day, listings_csv, document_heading=False
+    )
+    if n_list > 0:
+        listings_heading = f"### New listings (listing date {listing_day.isoformat()})\n\n"
+    elif ingest.new_stock_codes:
         listings_md, n_list = build_listing_summary_markdown_for_codes(
             ingest.new_stock_codes, listings_csv, document_heading=False
         )
-        listings_md = "### New listings (new vs sheet/CSV)\n\n" + listings_md.strip()
+        listings_heading = "### New listings (newly ingested from NLR this run)\n\n"
     else:
-        listings_md = "### New listings (new vs sheet/CSV)\n\n_No new NLR listings this run._"
+        listings_heading = f"### New listings (listing date {listing_day.isoformat()})\n\n"
+    listings_md = listings_heading + listings_md.strip()
 
     n_app = 0
     n_phip = 0
@@ -149,9 +157,12 @@ def run_hkex_daily(
 
     head = f"# HKEX pipeline digest — {listing_day.isoformat()}\n\n"
     if include_application_proof:
-        head += "_Only rows newly added this run (vs Google Sheet / CSV)._"
+        head += (
+            "_Listings: issuers with listing date matching this digest; other sections: rows newly "
+            "added this run (vs Google Sheet / CSV)._"
+        )
     else:
-        head += "_New NLR listings and CSRC rows only (Application Proof / PHIP fetch skipped)._"
+        head += "_New listings (by listing date) and CSRC rows only (Application Proof / PHIP fetch skipped)._"
     head += "\n\n---\n\n## New Listings\n\n" + listings_md.strip() + "\n"
     if include_application_proof:
         head += (
@@ -175,7 +186,7 @@ def run_hkex_daily(
         out_path.write_text(digest, encoding="utf-8")
         print(f"[SUMMARY] Wrote {out_path}", file=sys.stderr)
 
-    has_news = bool(ingest.new_stock_codes) or n_app > 0 or n_phip > 0 or len(csrc_result.added_rows) > 0
+    has_news = n_list > 0 or n_app > 0 or n_phip > 0 or len(csrc_result.added_rows) > 0
     email_sent = False
     if send_email:
         if not has_news:
