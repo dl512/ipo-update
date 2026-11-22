@@ -6,8 +6,10 @@ Each run:
 2. Download latest Chinese Main Board NLR (``NLR*_Chi.xlsx``) and ingest **only** rows not already in that store; update cornerstone long.
 3. Pull HKEX Application Proof + PHIP JSON feeds and upsert **only** new rows vs Sheet/CSV (full active list, not a single calendar day).
 4. Pull CSRC overseas-listing 备案通知书 and upsert **only** new rows.
-5. Email a digest when at least one section has news: listings whose **listing date** is the digest day
-   (or, if none, rows newly ingested from NLR this run), plus new Application Proof / PHIP / CSRC rows.
+5. Pull IPO headlines from AAStocks + HKET (prev HK trading day → today) for the digest.
+6. Email a digest when at least one section has news: listings whose **listing date** is the digest day
+   (or, if none, rows newly ingested from NLR this run), plus new Application Proof / PHIP / CSRC /
+   IPO news rows.
 
 Usage (from hkex/):
     python hkex_pipeline.py
@@ -40,6 +42,7 @@ from csrc_approval import (
     upsert_csrc_approvals,
 )
 from google_sheets_store import hkex_sheets_enabled
+from ipo_news import build_ipo_news_markdown, collect_ipo_news, news_date_window
 from listing_summary import (
     ListingEmailConfig,
     build_listing_summary_markdown,
@@ -71,6 +74,7 @@ class HkexDailyResult:
     listings_summarized: int
     application_proof_rows: int
     csrc_new_rows: int
+    ipo_news_rows: int
     summary_path: Path | None
     email_sent: bool
 
@@ -176,6 +180,17 @@ def run_hkex_daily(
         + build_csrc_new_rows_markdown(csrc_result.added_rows).strip()
         + "\n"
     )
+
+    news_start, news_end = news_date_window(listing_day)
+    ipo_items = collect_ipo_news(start=news_start, end=news_end, timeout=fetch_timeout)
+    for err in getattr(collect_ipo_news, "last_errors", []) or []:
+        print(f"[IPO NEWS] source error: {err}", file=sys.stderr)
+    ipo_news_md, n_ipo_news = build_ipo_news_markdown(ipo_items, start=news_start, end=news_end)
+    print(
+        f"[IPO NEWS] window={news_start.isoformat()}..{news_end.isoformat()} items={n_ipo_news}",
+        file=sys.stderr,
+    )
+    head += "\n\n---\n\n## IPO News\n\n" + ipo_news_md.strip() + "\n"
     digest = head
 
     out_path: Path | None = None
@@ -185,7 +200,13 @@ def run_hkex_daily(
         out_path.write_text(digest, encoding="utf-8")
         print(f"[SUMMARY] Wrote {out_path}", file=sys.stderr)
 
-    has_news = n_list > 0 or n_app > 0 or n_phip > 0 or len(csrc_result.added_rows) > 0
+    has_news = (
+        n_list > 0
+        or n_app > 0
+        or n_phip > 0
+        or len(csrc_result.added_rows) > 0
+        or n_ipo_news > 0
+    )
     email_sent = False
     if send_email:
         if not has_news:
@@ -202,6 +223,7 @@ def run_hkex_daily(
         listings_summarized=n_list,
         application_proof_rows=n_app + n_phip,
         csrc_new_rows=len(csrc_result.added_rows),
+        ipo_news_rows=n_ipo_news,
         summary_path=out_path,
         email_sent=email_sent,
     )
