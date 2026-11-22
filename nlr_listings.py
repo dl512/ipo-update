@@ -37,6 +37,9 @@ LISTING_COLS = [
     "date_of_listing",
     "sponsors",
     "gross_proceeds_hkd",
+    "offer_price_hkd",
+    "last_close_hkd",
+    "pct_vs_offer",
     "cornerstone_investors",
     "cornerstone_status",
     "a_share_listed",
@@ -58,6 +61,25 @@ def _format_listing_date(value: object) -> str:
     if pd.isna(ts):
         return ""
     return ts.strftime("%d/%m/%Y")
+
+
+def _format_offer_price(value: object) -> str:
+    """NLR col 9: 上市發售價 / IPO Subscription Price (HK$)."""
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return ""
+    s = str(value).strip().strip('"')
+    if not s or s == '"':
+        return ""
+    try:
+        f = float(s.replace(",", ""))
+    except ValueError:
+        return _clean_text(value)
+    if not (f == f):  # NaN
+        return ""
+    if abs(f - round(f)) < 1e-9:
+        return str(int(round(f)))
+    # Trim float noise (e.g. 19.6000000001)
+    return f"{f:.6f}".rstrip("0").rstrip(".")
 
 
 def _normalize_stock_code(value: object) -> str | None:
@@ -107,6 +129,9 @@ def parse_nlr_dataframe(df: pd.DataFrame) -> list[dict[str, str | int]]:
             i += 1
             continue
         gross = int(round(fa + fb))
+        offer = _format_offer_price(row[9] if len(row) > 9 else "")
+        if not offer:
+            offer = _format_offer_price(row_b[9] if len(row_b) > 9 else "")
 
         out.append(
             {
@@ -115,6 +140,7 @@ def parse_nlr_dataframe(df: pd.DataFrame) -> list[dict[str, str | int]]:
                 "date_of_listing": _format_listing_date(row[4]),
                 "sponsors": _clean_text(row[5]),
                 "gross_proceeds_hkd": gross,
+                "offer_price_hkd": offer,
             }
         )
         i += 2
@@ -340,6 +366,9 @@ def ingest_new_listings_from_nlr(
             "date_of_listing": str(rec["date_of_listing"]),
             "sponsors": str(rec["sponsors"]),
             "gross_proceeds_hkd": str(rec["gross_proceeds_hkd"]),
+            "offer_price_hkd": str(rec.get("offer_price_hkd", "") or ""),
+            "last_close_hkd": "",
+            "pct_vs_offer": "",
             "cornerstone_investors": inv_cell,
             "cornerstone_status": status,
             "a_share_listed": a_share_cell,

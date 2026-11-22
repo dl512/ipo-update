@@ -42,6 +42,7 @@ from csrc_approval import (
     upsert_csrc_approvals,
 )
 from google_sheets_store import hkex_sheets_enabled
+from hk_quotes import refresh_listings_last_close
 from ipo_news import build_ipo_news_markdown, collect_ipo_news, news_date_window
 from listing_summary import (
     ListingEmailConfig,
@@ -120,6 +121,9 @@ def run_hkex_daily(
         skip_llm=skip_llm_cornerstone,
         refresh_long=True,
     )
+
+    filled_closes = refresh_listings_last_close(listings_csv)
+    print(f"[QUOTES] last_close_hkd filled for {filled_closes} listing(s)", file=sys.stderr)
 
     # NLR rows are usually ingested before listing day, so compare by listing date for the digest.
     # Fall back to this run's newly ingested codes when nothing lists on ``listing_day``.

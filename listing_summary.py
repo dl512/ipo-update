@@ -70,6 +70,13 @@ def _a_share_listed_display(cell: object) -> str:
     return "—" if not s else str(cell).strip()
 
 
+def _format_offer_price_display(cell: object) -> str:
+    s = str(cell or "").strip()
+    if not s:
+        return "—"
+    return f"HK${s}"
+
+
 def _build_llm_prompt(rows: list[dict[str, Any]], listing_day: date) -> str:
     lines: list[str] = [
         f"These Hong Kong-listed issuers have listing date {listing_day.isoformat()} in our dataset.",
@@ -139,6 +146,9 @@ def _rule_based_markdown_section(r: dict[str, Any], summary: str) -> str:
         "",
         f"- **Listing date:** {r['date_of_listing'] if r['date_of_listing'] else '—'}",
         f"- **Sponsors:** {r['sponsors'] if r['sponsors'] else '—'}",
+        f"- **Offer price:** {_format_offer_price_display(r.get('offer_price_hkd', ''))}",
+        f"- **Last close:** {_format_offer_price_display(r.get('last_close_hkd', ''))}",
+        f"- **% vs offer:** {str(r.get('pct_vs_offer', '') or '—').strip() or '—'}",
         f"- **Gross proceeds:** {_format_currency_hkd(r['gross_proceeds_hkd'])}",
         f"- **Cornerstone investors:** {_cornerstone_display(r['cornerstone_investors'])}",
         f"- **A-share listed:** {_a_share_listed_display(r.get('a_share_listed', ''))}",
@@ -195,6 +205,9 @@ def build_listing_summary_markdown(
                 "date_of_listing": str(row.get("date_of_listing", "")).strip(),
                 "sponsors": str(row["sponsors"]).strip(),
                 "gross_proceeds_hkd": str(row["gross_proceeds_hkd"]).strip(),
+                "offer_price_hkd": str(row.get("offer_price_hkd", "")).strip(),
+                "last_close_hkd": str(row.get("last_close_hkd", "")).strip(),
+                "pct_vs_offer": str(row.get("pct_vs_offer", "")).strip(),
                 "cornerstone_investors": str(row.get("cornerstone_investors", "")).strip(),
                 "cornerstone_status": str(row.get("cornerstone_status", "")).strip(),
                 "a_share_listed": str(row.get("a_share_listed", "")).strip(),
@@ -261,6 +274,9 @@ def build_listing_summary_markdown_for_codes(
                 "date_of_listing": str(row.get("date_of_listing", "")).strip(),
                 "sponsors": str(row["sponsors"]).strip(),
                 "gross_proceeds_hkd": str(row["gross_proceeds_hkd"]).strip(),
+                "offer_price_hkd": str(row.get("offer_price_hkd", "")).strip(),
+                "last_close_hkd": str(row.get("last_close_hkd", "")).strip(),
+                "pct_vs_offer": str(row.get("pct_vs_offer", "")).strip(),
                 "cornerstone_investors": str(row.get("cornerstone_investors", "")).strip(),
                 "cornerstone_status": str(row.get("cornerstone_status", "")).strip(),
                 "a_share_listed": str(row.get("a_share_listed", "")).strip(),
