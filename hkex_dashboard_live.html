@@ -470,10 +470,35 @@
     return isNaN(t) ? NaN : t;
   }
 
+  /** Numeric sort key for money / % columns (raw sheet values, not display labels). */
+  function parseNumberForSort(col, raw) {
+    if (raw == null) return NaN;
+    let s = String(raw).trim();
+    if (!s) return NaN;
+    s = s.replace(/,/g, "").replace(/HK\$/gi, "").replace(/US\$/gi, "").replace(/\$/g, "").trim();
+    if (col === "pct_vs_offer") {
+      s = s.replace(/%/g, "").replace(/^\+/, "").trim();
+    }
+    // gross_proceeds is stored in HKD; display converts to US$m — sort by HKD amount
+    const n = parseFloat(s);
+    return Number.isFinite(n) ? n : NaN;
+  }
+
+  function isNumericSortColumn(col) {
+    return (
+      col === "gross_proceeds_hkd" ||
+      col === "offer_price_hkd" ||
+      col === "last_close_hkd" ||
+      col === "pct_vs_offer" ||
+      col === "stock_code"
+    );
+  }
+
   function sortRows(rows, col, dir) {
     const m = dir === "asc" ? 1 : -1;
     const copy = rows.slice();
     const dateCol = isDateSortColumn(col);
+    const numCol = isNumericSortColumn(col);
     copy.sort((a, b) => {
       const va = a[col] == null ? "" : String(a[col]);
       const vb = b[col] == null ? "" : String(b[col]);
@@ -486,12 +511,24 @@
         if (aOk && !bOk) return -1 * m;
         if (!aOk && bOk) return 1 * m;
       }
-      const cleanA = va.replace(/,/g, "").replace(/^HK\$/, "").trim();
-      const cleanB = vb.replace(/,/g, "").replace(/^HK\$/, "").trim();
+      if (numCol) {
+        const na = parseNumberForSort(col, va);
+        const nb = parseNumberForSort(col, vb);
+        const aOk = Number.isFinite(na);
+        const bOk = Number.isFinite(nb);
+        if (aOk && bOk) return (na - nb) * m;
+        if (aOk && !bOk) return -1 * m;
+        if (!aOk && bOk) return 1 * m;
+      }
+      const cleanA = va.replace(/,/g, "").replace(/^HK\$/i, "").trim();
+      const cleanB = vb.replace(/,/g, "").replace(/^HK\$/i, "").trim();
       const na = parseFloat(cleanA);
       const nb = parseFloat(cleanB);
       const numLike =
-        /^-?\d*\.?\d+$/.test(cleanA) && /^-?\d*\.?\d+$/.test(cleanB) && cleanA !== "" && cleanB !== "";
+        /^-?\d+(\.\d+)?([eE][+-]?\d+)?$/.test(cleanA) &&
+        /^-?\d+(\.\d+)?([eE][+-]?\d+)?$/.test(cleanB) &&
+        cleanA !== "" &&
+        cleanB !== "";
       if (numLike && Number.isFinite(na) && Number.isFinite(nb)) return (na - nb) * m;
       return va.localeCompare(vb, undefined, { numeric: true, sensitivity: "base" }) * m;
     });
