@@ -28,7 +28,7 @@ import requests
 from bs4 import BeautifulSoup
 from playwright.sync_api import Page, sync_playwright
 
-from extract_allotment_info import extract_with_ai, save_result_to_csv
+from extract_allotment_info import a_share_listed_cell, extract_with_ai, save_result_to_csv
 
 DEFAULT_TITLE_SEARCH_URL = "https://www1.hkexnews.hk/search/titlesearch.xhtml?lang=en"
 HOME_URL = "https://www.hkexnews.hk/index.htm#"
@@ -280,6 +280,7 @@ def fetch_cornerstone_from_hkex(
         "pdf_path": None,
         "result": None,
         "cornerstone_cell": None,
+        "a_share_listed": None,
         "cache_csv": None,
     }
     _log(verbose, f"[hkex] rows={row_count} load_more_clicks={load_more_clicks}")
@@ -301,6 +302,7 @@ def fetch_cornerstone_from_hkex(
     result = asyncio.run(extract_with_ai(pdf_path))
     out["result"] = result
     out["cornerstone_cell"] = cornerstone_cell_from_extract_result(result)
+    out["a_share_listed"] = a_share_listed_cell(result)
     cache_csv = data_dir / code / "extracted_cornerstone_only.csv"
     save_result_to_csv(result, cache_csv)
     out["cache_csv"] = str(cache_csv)

@@ -1,5 +1,7 @@
 """
 NLR workbook download, parsing, and ingest into hkex_listings_companies.csv (with cornerstone fetch).
+
+Company names come from the Chinese Main Board NLR (``NLR{year}_Chi.xlsx``).
 """
 
 from __future__ import annotations
@@ -18,13 +20,14 @@ from google_sheets_store import hkex_sheets_enabled, listings_source_ready, read
 from hkex_cornerstone_from_stock import fetch_cornerstone_from_hkex
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
-DEFAULT_NLR = _SCRIPT_DIR / "NLR2026_Eng.xlsx"
+DEFAULT_NLR = _SCRIPT_DIR / "NLR2026_Chi.xlsx"
 DEFAULT_LISTINGS_CSV = _SCRIPT_DIR / "hkex_listings_companies.csv"
 DEFAULT_LONG_CSV = _SCRIPT_DIR / "cornerstone_investor_listings_long.csv"
 DEFAULT_DATA_DIR = _SCRIPT_DIR / "data"
 
+# Chinese page hosts NLR*_Chi.xlsx links (company names in Chinese).
 MAIN_BOARD_NLR_PAGE = (
-    "https://www2.hkexnews.hk/New-Listings/New-Listing-Information/Main-Board?sc_lang=en"
+    "https://www2.hkexnews.hk/New-Listings/New-Listing-Information/Main-Board?sc_lang=zh-HK"
 )
 _HTTP_HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
 
@@ -36,6 +39,7 @@ LISTING_COLS = [
     "gross_proceeds_hkd",
     "cornerstone_investors",
     "cornerstone_status",
+    "a_share_listed",
 ]
 
 
@@ -117,10 +121,11 @@ def parse_nlr_dataframe(df: pd.DataFrame) -> list[dict[str, str | int]]:
     return out
 
 
-def download_main_board_nlr_eng(year: int, dest: Path, *, timeout: int = 120) -> Path:
+def download_main_board_nlr_chi(year: int, dest: Path, *, timeout: int = 120) -> Path:
+    """Download Chinese Main Board NLR workbook (``NLR{year}_Chi.xlsx``) to ``dest``."""
     dest = dest.resolve()
     dest.parent.mkdir(parents=True, exist_ok=True)
-    fname = f"NLR{year}_Eng.xlsx"
+    fname = f"NLR{year}_Chi.xlsx"
     r = requests.get(MAIN_BOARD_NLR_PAGE, headers=_HTTP_HEADERS, timeout=60)
     r.raise_for_status()
     m = re.search(
@@ -150,6 +155,10 @@ def download_main_board_nlr_eng(year: int, dest: Path, *, timeout: int = 120) ->
             pass
         raise
     return dest
+
+
+# Back-compat alias (pipeline now uses Chinese NLR for company names).
+download_main_board_nlr_eng = download_main_board_nlr_chi
 
 
 def write_listings_csv(df: pd.DataFrame, path: Path) -> None:
@@ -216,17 +225,19 @@ def ingest_new_listings_from_nlr(
     refresh_long: bool = True,
 ) -> NlrIngestResult:
     """
-    Download NLR (optional), append rows not yet in listings CSV, fetch cornerstone per new row,
+    Download Chinese NLR (optional), append rows not yet in listings CSV, fetch cornerstone per new row,
     optionally rebuild cornerstone_investor_listings_long.csv.
+
+    ``company_name`` is taken from ``NLR{year}_Chi.xlsx`` (Chinese names when HKEX provides them).
     """
-    nlr_path = (nlr_path or DEFAULT_NLR).resolve()
+    nlr_path = (nlr_path or (_SCRIPT_DIR / f"NLR{nlr_year}_Chi.xlsx")).resolve()
     listings_csv = (listings_csv or DEFAULT_LISTINGS_CSV).resolve()
     long_csv = (long_csv or DEFAULT_LONG_CSV).resolve()
     data_dir = (data_dir or DEFAULT_DATA_DIR).resolve()
 
     if fetch_nlr:
-        print(f"[FETCH] Main Board NLR {nlr_year}_Eng.xlsx -> {nlr_path}", file=sys.stderr)
-        download_main_board_nlr_eng(nlr_year, nlr_path, timeout=fetch_timeout)
+        print(f"[FETCH] Main Board NLR {nlr_year}_Chi.xlsx -> {nlr_path}", file=sys.stderr)
+        download_main_board_nlr_chi(nlr_year, nlr_path, timeout=fetch_timeout)
         print(f"[FETCH] OK ({nlr_path.stat().st_size} bytes)", file=sys.stderr)
     elif not nlr_path.exists():
         raise FileNotFoundError(f"NLR file not found: {nlr_path}")
@@ -285,10 +296,12 @@ def ingest_new_listings_from_nlr(
         stock = str(rec["stock_code"]).strip().zfill(5)
         inv_cell = ""
         status = ""
+        a_share_cell = ""
 
         if skip_llm:
             inv_cell = ""
             status = "skip_llm"
+            a_share_cell = ""
         else:
             print(f"[RUN] cornerstone for {stock} {rec.get('company_name', '')}", file=sys.stderr)
             try:
@@ -306,6 +319,8 @@ def ingest_new_listings_from_nlr(
                 print(f"[ERR] {stock}: {exc}", file=sys.stderr)
             else:
                 cell = out.get("cornerstone_cell")
+                # Same allotment PDF: keyword "A share(s)" gate, then LLM if present.
+                a_share_cell = str(out.get("a_share_listed") or "").strip()
                 if cell is None:
                     cornerstone_err += 1
                     status = "error: extractor returned no cornerstone_cell"
@@ -314,7 +329,10 @@ def ingest_new_listings_from_nlr(
                     inv_cell = cell
                     status = "done"
                     cornerstone_ok += 1
-                    print(f"[OK] {stock}", file=sys.stderr)
+                    print(
+                        f"[OK] {stock} a_share_listed={a_share_cell or '—'}",
+                        file=sys.stderr,
+                    )
 
         row = {
             "stock_code": stock,
@@ -324,6 +342,7 @@ def ingest_new_listings_from_nlr(
             "gross_proceeds_hkd": str(rec["gross_proceeds_hkd"]),
             "cornerstone_investors": inv_cell,
             "cornerstone_status": status,
+            "a_share_listed": a_share_cell,
         }
         new_frames.append(pd.DataFrame([row]))
 

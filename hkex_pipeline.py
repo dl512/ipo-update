@@ -3,7 +3,7 @@ Single entrypoint: fetch NLR, update listings + cornerstone long CSV, digest + e
 
 Each run:
 1. Read existing listings from Google Sheet (or CSV when sheets are off).
-2. Download latest Main Board NLR and ingest **only** rows not already in that store; update cornerstone long.
+2. Download latest Chinese Main Board NLR (``NLR*_Chi.xlsx``) and ingest **only** rows not already in that store; update cornerstone long.
 3. Pull HKEX Application Proof + PHIP JSON feeds and upsert **only** new rows vs Sheet/CSV (full active list, not a single calendar day).
 4. Pull CSRC overseas-listing 备案通知书 and upsert **only** new rows.
 5. Email a digest when at least one section has news: listings whose **listing date** is the digest day
@@ -46,7 +46,7 @@ from listing_summary import (
     build_listing_summary_markdown_for_codes,
     send_listing_summary_email,
 )
-from nlr_listings import DEFAULT_LISTINGS_CSV, DEFAULT_LONG_CSV, DEFAULT_NLR, NlrIngestResult, ingest_new_listings_from_nlr
+from nlr_listings import DEFAULT_LISTINGS_CSV, DEFAULT_LONG_CSV, NlrIngestResult, ingest_new_listings_from_nlr
 
 _HKT = ZoneInfo("Asia/Hong_Kong")
 
@@ -101,11 +101,10 @@ def run_hkex_daily(
     """
     listings_csv = (listings_csv or DEFAULT_LISTINGS_CSV).resolve()
     long_csv = (long_csv or DEFAULT_LONG_CSV).resolve()
-    nlr_path = (nlr_path or DEFAULT_NLR).resolve()
     listing_day = summary_date if summary_date is not None else datetime.now(_HKT).date()
 
     ingest = ingest_new_listings_from_nlr(
-        nlr_path=nlr_path,
+        nlr_path=nlr_path.resolve() if nlr_path is not None else None,
         listings_csv=listings_csv,
         long_csv=long_csv,
         data_dir=data_dir,
@@ -210,9 +209,9 @@ def run_hkex_daily(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="HKEX NLR ingest + cornerstone long + daily summary email.")
-    parser.add_argument("--no-fetch-nlr", action="store_true", help="Use existing NLR xlsx at default path")
+    parser.add_argument("--no-fetch-nlr", action="store_true", help="Use existing NLR Chi xlsx at default path")
     parser.add_argument("--nlr-year", type=int, default=2026)
-    parser.add_argument("--nlr", type=Path, default=None, help="NLR xlsx path")
+    parser.add_argument("--nlr", type=Path, default=None, help="NLR Chi xlsx path (default: NLR{year}_Chi.xlsx)")
     parser.add_argument("--csv", type=Path, default=None, help="hkex_listings_companies.csv")
     parser.add_argument("--long", type=Path, default=None, help="cornerstone_investor_listings_long.csv")
     parser.add_argument("--data-dir", type=Path, default=None)

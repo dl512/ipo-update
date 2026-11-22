@@ -61,6 +61,15 @@ def _cornerstone_display(cell: str) -> str:
     return s
 
 
+def _a_share_listed_display(cell: object) -> str:
+    s = str(cell or "").strip().lower()
+    if s in {"true", "yes", "1"}:
+        return "yes"
+    if s in {"false", "no", "0"}:
+        return "no"
+    return "—" if not s else str(cell).strip()
+
+
 def _build_llm_prompt(rows: list[dict[str, Any]], listing_day: date) -> str:
     lines: list[str] = [
         f"These Hong Kong-listed issuers have listing date {listing_day.isoformat()} in our dataset.",
@@ -132,6 +141,7 @@ def _rule_based_markdown_section(r: dict[str, Any], summary: str) -> str:
         f"- **Sponsors:** {r['sponsors'] if r['sponsors'] else '—'}",
         f"- **Gross proceeds:** {_format_currency_hkd(r['gross_proceeds_hkd'])}",
         f"- **Cornerstone investors:** {_cornerstone_display(r['cornerstone_investors'])}",
+        f"- **A-share listed:** {_a_share_listed_display(r.get('a_share_listed', ''))}",
     ]
     st = str(r.get("cornerstone_status", "")).strip()
     if st:
@@ -187,6 +197,7 @@ def build_listing_summary_markdown(
                 "gross_proceeds_hkd": str(row["gross_proceeds_hkd"]).strip(),
                 "cornerstone_investors": str(row.get("cornerstone_investors", "")).strip(),
                 "cornerstone_status": str(row.get("cornerstone_status", "")).strip(),
+                "a_share_listed": str(row.get("a_share_listed", "")).strip(),
             }
         )
 
@@ -252,6 +263,7 @@ def build_listing_summary_markdown_for_codes(
                 "gross_proceeds_hkd": str(row["gross_proceeds_hkd"]).strip(),
                 "cornerstone_investors": str(row.get("cornerstone_investors", "")).strip(),
                 "cornerstone_status": str(row.get("cornerstone_status", "")).strip(),
+                "a_share_listed": str(row.get("a_share_listed", "")).strip(),
             }
         )
 

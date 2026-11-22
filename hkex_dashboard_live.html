@@ -251,6 +251,7 @@
     listings: {
       columns: [
         "stock_code",
+        "a_share_listed",
         "company_name",
         "date_of_listing",
         "sponsors",
@@ -259,6 +260,7 @@
       ],
       columnLabels: {
         stock_code: "Stock code",
+        a_share_listed: "A-share listed",
         company_name: "Company",
         date_of_listing: "Listing date",
         sponsors: "Sponsors",
@@ -560,6 +562,11 @@
             } else {
               cell = escapeHtml(raw);
             }
+          } else if (kind === "listings" && c === "a_share_listed") {
+            const v = raw.trim().toLowerCase();
+            if (v === "true" || v === "yes" || v === "1") cell = "Yes";
+            else if (v === "false" || v === "no" || v === "0") cell = "No";
+            else cell = escapeHtml(raw || "—");
           } else if (/^https?:\/\//i.test(raw)) {
             let label = "link";
             try {
