@@ -5,7 +5,8 @@ Sources:
 - AAStocks: https://www.aastocks.com/tc/stocks/market/ipo/iponews.aspx
 - HKET:     https://inews.hket.com/sran009-2/新股IPO
 
-Default window: previous HK trading day (weekday-only) through today (Asia/Hong_Kong), inclusive.
+Default window: last 3 calendar days through today (Asia/Hong_Kong), inclusive
+(today and the prior 2 days — no trading-day logic).
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ from zoneinfo import ZoneInfo
 import requests
 
 _HKT = ZoneInfo("Asia/Hong_Kong")
+IPO_NEWS_LOOKBACK_DAYS = 3  # inclusive calendar days ending today
 _HTTP_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -53,22 +55,19 @@ class IpoNewsItem:
     source: str
 
 
-def previous_hk_trading_day(on: date | None = None) -> date:
+def news_date_window(
+    today: date | None = None,
+    *,
+    lookback_days: int = IPO_NEWS_LOOKBACK_DAYS,
+) -> tuple[date, date]:
     """
-    Previous Mon–Fri calendar day before ``on`` (HKT).
-    Does not account for HK public holidays.
+    Inclusive calendar window ending on ``today`` (HKT).
+
+    ``lookback_days=3`` → today and the previous 2 days (e.g. Nov 24–26 if today is Nov 26).
     """
-    d = on or datetime.now(_HKT).date()
-    d = d - timedelta(days=1)
-    while d.weekday() >= 5:  # Sat/Sun
-        d -= timedelta(days=1)
-    return d
-
-
-def news_date_window(today: date | None = None) -> tuple[date, date]:
-    """Inclusive [previous trading day, today]."""
     end = today or datetime.now(_HKT).date()
-    start = previous_hk_trading_day(end)
+    days = max(1, int(lookback_days))
+    start = end - timedelta(days=days - 1)
     return start, end
 
 
@@ -179,7 +178,7 @@ def build_ipo_news_markdown(items: list[IpoNewsItem], *, start: date, end: date)
     if not items:
         body = f"_No IPO news from {start.isoformat()} to {end.isoformat()}_"
         return body, 0
-    lines = [f"_Window: {start.isoformat()} → {end.isoformat()} (prev trading day → today)_", ""]
+    lines = [f"_Window: {start.isoformat()} → {end.isoformat()} (last {IPO_NEWS_LOOKBACK_DAYS} calendar days)_", ""]
     for it in items:
         # markdown link; escape nothing special beyond newlines already cleaned
         lines.append(f"- {it.published.isoformat()} · {it.source}: [{it.title}]({it.url})")

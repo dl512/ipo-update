@@ -6,7 +6,7 @@ Each run:
 2. Download latest Chinese Main Board NLR (``NLR*_Chi.xlsx``) and ingest **only** rows not already in that store; update cornerstone long.
 3. Pull HKEX Application Proof + PHIP JSON feeds and upsert **only** new rows vs Sheet/CSV (full active list, not a single calendar day).
 4. Pull CSRC overseas-listing 备案通知书 and upsert **only** new rows.
-5. Pull IPO headlines from AAStocks + HKET (prev HK trading day → today) for the digest.
+5. Pull IPO headlines from AAStocks + HKET (last 3 calendar days → today) for the digest.
 6. Email a digest when at least one section has news: listings whose **listing date** is the digest day
    (or, if none, rows newly ingested from NLR this run), plus new Application Proof / PHIP / CSRC /
    IPO news rows.
