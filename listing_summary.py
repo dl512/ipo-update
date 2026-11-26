@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import re
 import sys
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -42,16 +41,23 @@ def row_matches_listing_date(cell: str, target: date) -> bool:
     return False
 
 
-def _format_currency_hkd(value: str) -> str:
-    raw = str(value).strip().replace(",", "")
-    if not raw or not re.fullmatch(r"-?\d+", raw):
+# Approximate HKD per USD (same peg as hkex_dashboard_live.html) for email US$m display.
+_HKD_PER_USD = 7.8
+
+
+def _format_gross_proceeds_usd_m(value: object) -> str:
+    """Format stored ``gross_proceeds_hkd`` as US$ millions for the digest email."""
+    raw = str(value or "").strip().replace(",", "").replace("HK$", "").replace("HKD", "").strip()
+    if not raw:
+        return "—"
+    try:
+        hkd = float(raw)
+    except ValueError:
         return str(value).strip() or "—"
-    n = int(raw)
-    if n >= 1_000_000_000:
-        return f"HK${n / 1_000_000_000:.2f}b ({n:,} HKD)"
-    if n >= 1_000_000:
-        return f"HK${n / 1_000_000:.1f}m ({n:,} HKD)"
-    return f"HK${n:,}"
+    if not (hkd == hkd) or _HKD_PER_USD <= 0:  # NaN check
+        return "—"
+    usd_m = hkd / _HKD_PER_USD / 1_000_000
+    return f"US${usd_m:.1f}m"
 
 
 def _cornerstone_display(cell: str) -> str:
@@ -149,7 +155,7 @@ def _rule_based_markdown_section(r: dict[str, Any], summary: str) -> str:
         f"- **Offer price:** {_format_offer_price_display(r.get('offer_price_hkd', ''))}",
         f"- **Last close:** {_format_offer_price_display(r.get('last_close_hkd', ''))}",
         f"- **% vs offer:** {str(r.get('pct_vs_offer', '') or '—').strip() or '—'}",
-        f"- **Gross proceeds:** {_format_currency_hkd(r['gross_proceeds_hkd'])}",
+        f"- **Gross proceeds:** {_format_gross_proceeds_usd_m(r['gross_proceeds_hkd'])}",
         f"- **Cornerstone investors:** {_cornerstone_display(r['cornerstone_investors'])}",
         f"- **A-share listed:** {_a_share_listed_display(r.get('a_share_listed', ''))}",
     ]
